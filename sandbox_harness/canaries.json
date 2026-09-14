@@ -1,0 +1,8 @@
+{
+  "canaries": [
+    "CANARY-STRAT-9f21c7a4",
+    "CANARY-KEYLIKE-sk_x8Q2vTb",
+    "CANARY-PII-Alvarez-4471"
+  ],
+  "note": "detect these in proxy log / any egress"
+}

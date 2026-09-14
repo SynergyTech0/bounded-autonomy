@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets & environment — NEVER commit
+.env
+.env.*
+*.key
+*.pem
+id_rsa
+id_ed25519
+
+# Governance runtime state (per-deployment; never shared)
+governance_priv*
+governance_pub*
+governance_go.json
+governance_heartbeat.json
+governance_ledger*
+.governance_*
+keys/
+*.session
+
+# Logs, ledgers, bundles, and build output
+*.jsonl
+*_log.jsonl
+sandbox_bundle/
+sandbox_bundle.zip*
+*_pkg.zip*
+*.zip
