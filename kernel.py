@@ -284,6 +284,7 @@ def authorize(affordance: str,
               phi_node: bool = False,
               conscience_fn=None,
               derived_from: set[str] | None = None,
+              legibility_verifier=None,
               record: bool = True) -> Decision:
     """Authorize one action through every governance layer. The ONLY sanctioned entry point.
 
@@ -318,7 +319,7 @@ def authorize(affordance: str,
     #     restriction from another layer cannot lower the explanation the action owes.
     try:
         lg_verdict, lg_why, lg_detail = legibility.gate(
-            proposal or {}, base_tier, affordance, args)
+            proposal or {}, base_tier, affordance, args, verifier=legibility_verifier)
     except BaseException as e:
         lg_verdict, lg_why, lg_detail = (
             lattice.REFUSE, f"legibility layer raised ({type(e).__name__}), kernel failed closed", {})
@@ -430,7 +431,8 @@ def enforce_layers() -> tuple:
 
 def mediate(affordance: str, args: dict | None = None, principal: str = "mind",
             session: str = "mind-loop", autonomous: bool = True, conscience_fn=None,
-            proposal: dict | None = None, derived_from=None) -> tuple[bool, "Decision | None", str]:
+            proposal: dict | None = None, derived_from=None,
+            legibility_verifier=None) -> tuple[bool, "Decision | None", str]:
     """Enforcement gate: authorize, apply the enforced-layer subset, commit, decide. (§9)
 
     Returns (permitted, decision, reason). `permitted` is True ONLY when every enforced layer
@@ -454,7 +456,7 @@ def mediate(affordance: str, args: dict | None = None, principal: str = "mind",
                       autonomous=autonomous, conscience_fn=conscience_fn,
                       proposal=proposal or {"summary": affordance, "claims": [],
                                             "affordances": [affordance]},
-                      derived_from=derived_from)
+                      derived_from=derived_from, legibility_verifier=legibility_verifier)
         v = d.enforced(enforce_layers())
         if v != lattice.AUTO:
             return False, d, f"blocked by v2 ({v}): {d.reason}"

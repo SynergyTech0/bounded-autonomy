@@ -944,6 +944,59 @@ def test_runtime_guard():
           (r.stdout + r.stderr).strip()[:200])
 
 
+@invariant("VER", "legibility scores VERIFIED evidence, not self-report; a contradicted claim is REFUSE")
+def test_legibility_verification():
+    import legibility as L
+    claims = [{"text": f"claim {i}", "check": f"check {i}",
+               "evidence": [f"ref{i}"], "evidence_available": True} for i in range(4)]
+    prop = {"summary": "do the thing", "claims": claims,
+            "affordances": ["email:move"], "steps": 4, "steps_shown": 4}
+
+    # Identical STRUCTURE, three ground-truth verdicts — the score must follow the ground truth,
+    # not the proposal's own evidence_available booleans.
+    L_ok, f_ok = L.score(prop, verifier=lambda c: L.VERIFIED)
+    L_miss, f_miss = L.score(prop, verifier=lambda c: L.UNREACHABLE)
+    L_self, f_self = L.score(prop)                     # no verifier -> self-report fallback
+    check(f_ok["verified"] == 1.0 and f_miss["verified"] == 0.0,
+          "the verifier drives `evidenced`, not the proposal's own boolean",
+          f"ok={f_ok['verified']} miss={f_miss['verified']}")
+    check(L_ok > L_miss,
+          "verified evidence scores strictly higher than asserted-but-unreachable evidence",
+          f"{L_ok} vs {L_miss}")
+    check(f_self["verified"] is None,
+          "with no verifier the output is marked unverified (self-report gap surfaced, not hidden)",
+          f_self)
+
+    # A broken promise (asserted available, does not resolve) is WORSE than staying silent.
+    silent = {**prop, "claims": [{**c, "evidence_available": False} for c in claims]}
+    L_silent, _ = L.score(silent, verifier=lambda c: L.UNREACHABLE)
+    check(L_miss < L_silent,
+          "asserting evidence you cannot produce scores worse than not asserting it",
+          f"broken={L_miss} silent={L_silent}")
+
+    # A CONTRADICTED claim -> REFUSE at the gate, regardless of otherwise-perfect structure.
+    v, why, _ = L.gate(prop, lattice.PROPOSE, "email:move", verifier=lambda c: L.CONTRADICTED)
+    check(v == lattice.REFUSE and "contradict" in why.lower(),
+          "a claim contradicted by ground truth is REFUSED, not returned for decomposition",
+          f"{v}: {why}")
+
+    # Structural mimicry cannot outrank verification: same structure, unreachable evidence.
+    v_ok, _, _ = L.gate(prop, lattice.PROPOSE, "email:move", verifier=lambda c: L.VERIFIED)
+    v_fake, _, _ = L.gate(prop, lattice.PROPOSE, "email:move", verifier=lambda c: L.UNREACHABLE)
+    check(lattice.rank(v_fake) <= lattice.rank(v_ok),
+          "identical structure with unreachable evidence never outranks the verified version",
+          f"verified={v_ok} fake={v_fake}")
+
+    # Through the kernel: the verifier reaches legibility via authorize(..., legibility_verifier=).
+    _fresh_trajectory(); _fresh_corrigibility()
+    corrigibility.grant(3600); corrigibility.beat()
+    dec = kernel.authorize("email:move", {}, principal="mind", session="ver",
+                           proposal=prop, legibility_verifier=lambda c: L.CONTRADICTED)
+    check(dec.layers["legibility"][0] == lattice.REFUSE,
+          "kernel threads the verifier into legibility; a contradicted claim REFUSEs there",
+          dec.layers["legibility"])
+
+
 TESTS = [test_g2_fail_closed, test_g3_tightening_only, test_g5_no_unreviewable_action,
          test_g6_informed_approval, test_g7_scrutiny_ceiling, test_g8_trajectory,
          test_g9_information_flow, test_g10_no_laundering, test_g11_mesh_budget,
@@ -951,7 +1004,7 @@ TESTS = [test_g2_fail_closed, test_g3_tightening_only, test_g5_no_unreviewable_a
          test_g14_dead_mans_switch, test_g15_tamper_evident, test_kernel_end_to_end,
          test_shadow_is_inert, test_enforcement, test_asymmetric_verify_only,
          test_loop_allowlist, test_blind_mode, test_agent_proposal, test_redteam_regressions,
-         test_mediation_completeness, test_runtime_guard]
+         test_mediation_completeness, test_runtime_guard, test_legibility_verification]
 
 
 if __name__ == "__main__":

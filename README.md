@@ -36,9 +36,14 @@ Stated first, on purpose.
 
 1. **It does not solve alignment.** It bounds what a misaligned system can *do* through the
    governed path. It says nothing about what the system *wants*.
-2. **Legibility is a gameable proxy.** A system that can model the legibility scorer can produce
-   proposals that score well and are still not understood. This raises the cost of deception; it
-   does not make it impossible.
+2. **Legibility is a proxy — but evidence is verified, not asserted.** L is scored from structure,
+   so a system that models the scorer can hit its markers. Two things constrain that: L is never
+   the model's self-report, and its `evidenced` factor is checked against ground truth when you
+   wire a read-only verifier — a claim whose evidence doesn't resolve earns no credit, an
+   asserted-available claim that doesn't resolve is penalised, and a claim ground truth
+   *contradicts* is REFUSED. What survives is a proposal whose every checkable claim is
+   individually true but assembled to mislead: verification checks facts, not intent. It raises
+   the cost of deception sharply; it does not end it.
 3. **It governs the mediated path only.** Any capability reached *without* going through
    `kernel.authorize()` is ungoverned. The model's strength is exactly the completeness of that
    mediation — an ongoing engineering obligation, not a proof. (See the Hugging Face incident
@@ -69,7 +74,7 @@ lattice.py         the permission lattice + meet (composition operator)
 ledger.py          sha256 hash-chained, tamper-evident decision log
 corrigibility.py   GO token / heartbeat / chain integrity / governance-surface  (G12–G15)
 composition.py     trajectory, taint labels, principal union, mesh budget       (G8–G11)
-legibility.py      legibility score vs required floor; decompose or refuse      (G5–G7)
+legibility.py      L vs required floor; decompose or refuse; evidence VERIFIED, not asserted (G5–G7, VER)
 policy.py          v1 deterministic tier classifier  — REFERENCE; bring your own (G1–G2)
 kernel.py          the single mediated path: composes the layers, records every decision
 shadow.py          run v2 beside v1 without enforcing (observe-only rollout)
@@ -107,7 +112,7 @@ No dependencies for the core suite (Python 3.11+). `cryptography` enables the as
 stop-grant; without it, the model falls back to HMAC (tamper-evident, not tamper-proof).
 
 ```bash
-python test_governance.py            # 23 invariants, asserts on values
+python test_governance.py            # 24 invariants, asserts on values
 python mediation_audit.py youragent/*.py   # static completeness: no effect written outside the executor
 python runtime_guard.py              # runtime guard self-test: a dynamic-dispatch escape is blocked
 python redteam.py             # deterministic adversarial probes (regression fixtures)

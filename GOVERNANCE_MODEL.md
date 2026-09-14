@@ -225,9 +225,17 @@ Stated plainly, because a governance model that oversells itself is worse than n
 
 1. **It does not solve alignment.** It bounds what a misaligned system can *do* through the
    governed path. It says nothing about what the system *wants*.
-2. **L is a gameable proxy.** A system capable enough to model the legibility scorer can
-   produce proposals that score well and are still not understood. G5/G7 raise the cost of
-   deception; they do not make it impossible.
+2. **L is a proxy; verification narrows the gap, it does not close it.** L is scored from
+   structure, and a system that can model the scorer can hit its markers. Two things constrain
+   that: L is never the model's self-report, and the `evidenced` factor is *verified* against
+   ground truth when a read-only verifier is wired (`legibility.verify_claims`, invariant VER) —
+   a claim whose evidence does not resolve earns no credit, an asserted-available claim that does
+   not resolve is penalised as a broken promise, and a claim ground truth *contradicts* is
+   REFUSED outright. That converts "you can assert anything" into "every checkable assertion must
+   hold." What survives is genuinely harder: a proposal whose every checkable claim is
+   individually true, assembled to mislead about the whole — verification checks facts, not
+   intent. Without a verifier the layer falls back to self-report and labels its output
+   `verified: null`. G5/G7 plus verification raise the cost of deception sharply; they do not end it.
 3. **It governs the mediated path only.** Any capability the system reaches *without* going
    through `kernel.authorize()` is ungoverned. The model's strength is exactly the
    completeness of that mediation, which is an ongoing engineering obligation, not a proof.
@@ -294,6 +302,7 @@ clean exit. A conformance run reports per-invariant PASS/FAIL.
 | RT  | every confirmed red-team bypass stays fixed, and no probe holds vacuously |
 | MED | every effect routes through the executor waist; a raw sink outside it is caught, reads are not |
 | RTG | a guarded effect reached by dynamic dispatch is blocked at runtime outside a permit window |
+| VER | a claim's evidence must resolve against ground truth to count; a contradicted claim is REFUSE |
 
 ---
 

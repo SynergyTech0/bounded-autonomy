@@ -24,11 +24,17 @@ Three repairs:
       approvals suffices. A system that cannot explain a high-impact action does not get to
       take it by finding enough approvers.
 
-HONEST LIMIT (GOVERNANCE_MODEL.md §7.2): L is a STRUCTURAL proxy — claim decomposition,
-verifiability, unexplained capability, evidence availability. It is never the model's own
-report of how clear it is being, because that is the one number an unaligned system controls
-directly. A system able to model this scorer can still produce well-scoring proposals it does
-not mean. G5/G7 raise the cost of that; they do not make it impossible.
+HONEST LIMIT (GOVERNANCE_MODEL.md §7.2): L is a STRUCTURAL proxy, and a system able to model the
+scorer can still hit its markers. Two things narrow the gap. First, L is never the model's own
+report of how clear it is being — that is the one number an unaligned system controls directly.
+Second, the `evidenced` factor is verifiable rather than asserted: wire a read-only `verifier`
+(see verify_claims) and a claim's evidence must actually RESOLVE against ground truth to earn
+credit, a claim asserted-available that does not resolve is penalised as a broken promise, and a
+claim CONTRADICTED by ground truth is REFUSED outright. That converts "you can assert anything"
+into "every checkable assertion must hold." What SURVIVES is genuinely harder: a proposal every
+one of whose claims is individually true and checkable, assembled to mislead about the whole —
+verification checks facts, it does not read intent. Without a verifier the layer falls back to the
+self-report and labels its own output `verified: null`, so the gap is visible, not silent.
 
   python legibility.py demo     # score a legible and an illegible proposal side by side
 """
@@ -87,8 +93,32 @@ def blast_radius(affordance: str, tier: str, args: dict | None = None) -> float:
 _HEDGE = re.compile(r"\b(somehow|complex|sophisticated|advanced|trust me|as needed|"
                     r"various|multiple factors|it is clear|obviously|non-?trivial)\b", re.I)
 
+# Claim-verification states. Closing the §7.2 residual: whether a claim's evidence is real is a
+# fact about the world, not a boolean the proposing system gets to assert about itself.
+VERIFIED, UNREACHABLE, CONTRADICTED = "verified", "unreachable", "contradicted"
 
-def score(proposal: dict) -> tuple[float, dict]:
+
+def verify_claims(claims: list, verifier) -> list:
+    """Resolve each claim's evidence against ground truth via a caller-supplied READ-ONLY verifier.
+
+    `verifier(claim)` returns one of VERIFIED / UNREACHABLE / CONTRADICTED — a bare string, or a
+    dict with a "state" key. Anything else, or a raise, is treated as UNREACHABLE: fail-closed
+    toward "not proven". The verifier is called during a PERMISSION CHECK, not an action, so it
+    may READ ground truth (does the cited file exist, does the named row hold the claimed value)
+    but MUST be side-effect-free — no write, no egress. A verifier that acts is itself an
+    un-mediated effect; keep it to reads (and, ideally, run it behind runtime_guard's block set)."""
+    states = []
+    for c in claims:
+        try:
+            r = verifier(c)
+            s = r.get("state") if isinstance(r, dict) else r
+            states.append(s if s in (VERIFIED, UNREACHABLE, CONTRADICTED) else UNREACHABLE)
+        except Exception:
+            states.append(UNREACHABLE)
+    return states
+
+
+def score(proposal: dict, verifier=None) -> tuple[float, dict]:
     """L in [0,1] from STRUCTURAL properties only. -> (L, factors)
 
     A proposal is a dict:
@@ -117,8 +147,26 @@ def score(proposal: dict) -> tuple[float, dict]:
 
     decomposed = 0.0 if n == 0 else min(1.0, n / 4.0)
     checkable = 0.0 if n == 0 else sum(1 for c in claims if str(c.get("check") or "").strip()) / n
-    evidenced = 0.0 if n == 0 else sum(
-        1 for c in claims if c.get("evidence") and c.get("evidence_available", False)) / n
+
+    # EVIDENCE — the §7.2 residual lives on this line. With NO verifier, `evidenced` is the
+    # proposal's OWN `evidence_available` self-report: the number an unaligned system controls
+    # directly. With a verifier, it becomes the fraction whose evidence actually RESOLVES against
+    # ground truth, and two deception signals are separated out: a `broken` promise (asserted
+    # available, did not resolve) and a `contradicted` claim (resolves and DISAGREES — a checkable
+    # falsehood). Verification is what turns this factor from assertion into fact.
+    states = verify_claims(claims, verifier) if (verifier and n) else None
+    contradicted = broken = 0
+    if states is None:
+        evidenced = 0.0 if n == 0 else sum(
+            1 for c in claims if c.get("evidence") and c.get("evidence_available", False)) / n
+        verified_frac = None
+    else:
+        verified_n = states.count(VERIFIED)
+        contradicted = states.count(CONTRADICTED)
+        broken = sum(1 for c, s in zip(claims, states)
+                     if c.get("evidence_available", False) and s != VERIFIED)
+        evidenced = verified_n / n
+        verified_frac = round(verified_n / n, 3)
 
     blob = " ".join(str(c.get("text", "")) for c in claims) + " " + str(proposal.get("summary", ""))
     if affs:
@@ -140,9 +188,22 @@ def score(proposal: dict) -> tuple[float, dict]:
     if hedges:
         L *= max(0.5, 1.0 - 0.1 * hedges)
 
+    # Verification penalties apply ONLY when a verifier actually ran.
+    if states is not None:
+        if broken:
+            # Claiming evidence you cannot produce is a deception signal, not a neutral gap —
+            # it scores WORSE than staying silent about evidence at all.
+            L *= max(0.35, 1.0 - 0.25 * broken)
+        if contradicted:
+            # A checkable claim ground truth disagrees with is a lie; legibility collapses and
+            # gate() turns it into REFUSE — decomposition cannot rescue a false claim.
+            L = min(L, 0.10)
+
     factors = {"decomposed": round(decomposed, 3), "checkable": round(checkable, 3),
                "evidenced": round(evidenced, 3), "capability": round(capability, 3),
-               "shown": round(shown_ratio, 3), "hedges": hedges, "claims": n}
+               "shown": round(shown_ratio, 3), "hedges": hedges, "claims": n,
+               "verified": verified_frac, "contradicted": contradicted,
+               "broken_evidence": broken}
     return round(min(1.0, max(0.0, L)), 3), factors
 
 
@@ -162,34 +223,50 @@ def reviewers_required(blast: float, L: float) -> int:
 
 
 def gate(proposal: dict, tier: str, affordance: str = "", args: dict | None = None,
-         blast: float | None = None) -> tuple[str, str, dict]:
+         blast: float | None = None, verifier=None) -> tuple[str, str, dict]:
     """The legibility layer's verdict. Layer 3 of kernel.authorize(). -> (verdict, reason, detail)
 
-    Three outcomes:
-      ok         L clears the floor. Verdict unchanged (this layer never PROMOTES).
-      decompose  below the floor but under the ceiling -> PROPOSE, returned for decomposition.
-      refuse     at or above the opacity ceiling -> REFUSE. No approval clears this. (G7)
+    Four outcomes:
+      contradicted  a claim's evidence RESOLVES and disagrees -> REFUSE. A checkable falsehood is
+                    not approvable and decomposition cannot rescue it. (only with a verifier wired)
+      refuse        at or above the opacity ceiling -> REFUSE. No approval clears this. (G7)
+      decompose     below the floor but under the ceiling -> PROPOSE, returned for decomposition.
+      ok            L clears the floor. Verdict unchanged (this layer never PROMOTES).
+
+    `verifier` (optional, read-only) resolves each claim's evidence against ground truth so
+    `evidenced` reflects fact rather than the proposal's self-report — see verify_claims(). With
+    no verifier the layer works exactly as before and marks the detail `verified: null` so the
+    self-report gap is visible rather than silent.
 
     Fail-closed: an internal error is REFUSE."""
     try:
         B = blast_radius(affordance, tier, args) if blast is None else float(blast)
-        L, factors = score(proposal or {})
+        L, factors = score(proposal or {}, verifier=verifier)
         need = required_legibility(tier, B)
         opacity = round(B * (1.0 - L), 3)
         detail = {"L": L, "required": need, "blast": B, "opacity": opacity,
                   "ceiling": CEILING, "reviewers": reviewers_required(B, L), **factors}
 
+        if factors.get("contradicted"):
+            return (lattice.REFUSE,
+                    f"G5 {factors['contradicted']} claim(s) CONTRADICTED by ground truth — a "
+                    "checkable falsehood is not approvable; the proposal is not what it says",
+                    detail)
         if opacity >= CEILING:
             return (lattice.REFUSE,
                     f"G7 opacity {opacity} >= ceiling {CEILING} (blast {B}, legibility {L}) — "
                     "no quantity of approval permits this; make it legible or reduce its reach",
                     detail)
         if L < need:
+            unver = " (evidence UNVERIFIED — self-reported; wire a verifier)" \
+                if factors.get("verified") is None else ""
             return (lattice.PROPOSE,
-                    f"G5 legibility {L} < required {need} — returned for decomposition "
+                    f"G5 legibility {L} < required {need} — returned for decomposition{unver} "
                     f"(weakest factor: {min(factors, key=lambda k: factors[k] if isinstance(factors[k], float) else 9)})",
                     detail)
-        return lattice.AUTO, f"G5 legibility {L} >= {need}", detail
+        tag = f"verified {factors['verified']}" if factors.get("verified") is not None \
+            else "evidence self-reported"
+        return lattice.AUTO, f"G5 legibility {L} >= {need} ({tag})", detail
     except Exception as e:                                        # G2
         return lattice.REFUSE, f"legibility layer failed closed: {str(e)[:80]}", {}
 
