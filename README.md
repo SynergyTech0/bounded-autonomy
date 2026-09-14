@@ -73,8 +73,18 @@ legibility.py      legibility score vs required floor; decompose or refuse      
 policy.py          v1 deterministic tier classifier  — REFERENCE; bring your own (G1–G2)
 kernel.py          the single mediated path: composes the layers, records every decision
 shadow.py          run v2 beside v1 without enforcing (observe-only rollout)
+executor.py        the single dispatch waist — effectors are registered data; execute() gates them
+mediation_audit.py CI check: fails the build if a raw effect primitive escapes the executor  (MED)
 governance_operator.py   the OPERATOR half — run OFF the agent host; mints signed grants
 ```
+
+**Complete mediation — making "anything added auto-routes through the gate" structural.** The gate
+only governs what reaches it, so `executor.py` makes the gated `execute()` the *only door*:
+effectors are registered (`@effector("email:move")`) rather than called directly, so adding a
+capability means registering one, and a registered handler runs only after `kernel.mediate()`
+permits it. `mediation_audit.py` then walks your agent-reachable modules and fails CI if any raw
+effect primitive (subprocess, socket, http, write-mode `open`, deletion) appears outside the
+executor. Point it at your own agent package: `python mediation_audit.py youragent/*.py`.
 
 `policy.py` here is a **generic reference classifier**. The kernel treats it as an optional,
 fail-closed layer: supply your own affordance taxonomy through the same
@@ -87,7 +97,8 @@ No dependencies for the core suite (Python 3.11+). `cryptography` enables the as
 stop-grant; without it, the model falls back to HMAC (tamper-evident, not tamper-proof).
 
 ```bash
-python test_governance.py     # 21 invariants, asserts on values
+python test_governance.py            # 22 invariants, asserts on values
+python mediation_audit.py youragent/*.py   # completeness: no effect escapes the executor (your agent modules)
 python redteam.py             # deterministic adversarial probes (regression fixtures)
 python kernel.py demo         # the worked examples from GOVERNANCE_MODEL.md
 ```
