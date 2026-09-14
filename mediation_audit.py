@@ -24,11 +24,13 @@ network (socket, http.client, urllib.request.urlopen, requests.*, httpx.*), file
 deletes (open(...) in a write/append/exclusive mode, os.remove/unlink/rename/replace/truncate,
 shutil.rmtree/move/copy*). Reads (open default or 'r', os.path.*, os.getcwd) are NOT flagged.
 
-WHAT IT CANNOT CATCH — stated, because a checker that oversells itself is worse than none:
-dynamic dispatch (getattr(os, name)()), C extensions / FFI, a primitive reached via eval, and any
-sink not on the list below. It raises the cost of an accidental bypass to "you had to work around
-a red build"; it is not a capability proof. The OS boundary (sandbox_harness/) is what contains
-the sink that never enters Python's call graph. Gate necessary, boundary sufficient.
+WHAT IT CANNOT CATCH — stated, because a checker that oversells itself is worse than none. It flags
+the STATIC escape hatches (eval / exec / compile / __import__ / ctypes), but it cannot see a
+primitive reached by DYNAMIC DISPATCH — `getattr(os, name)()`, a callable pulled from a dict, a
+handle passed across a boundary — because there is nothing in the source to match. `runtime_guard.py`
+is the runtime complement that catches exactly that (the audit event fires however the call was
+written); a native primitive that never enters CPython at all is contained only by the OS boundary
+(`sandbox_harness/`). Gate necessary, boundary sufficient — three layers, each honest about its edge.
 """
 from __future__ import annotations
 
@@ -43,9 +45,14 @@ _SINK_FULL = {
     "socket.socket", "socket.create_connection", "socket.create_server",
     "urllib.request.urlopen", "shutil.rmtree", "shutil.move", "shutil.copy",
     "shutil.copy2", "shutil.copyfile", "shutil.copytree",
+    "importlib.import_module", "ctypes.CDLL", "ctypes.cdll", "ctypes.WinDLL",
 }
 # Module prefixes where ANY attribute call is a sink (the whole surface is effectful).
-_SINK_PREFIX = ("subprocess.", "requests.", "httpx.", "http.client.")
+_SINK_PREFIX = ("subprocess.", "requests.", "httpx.", "http.client.", "ctypes.")
+# Bare builtins that load or run constructed code — the in-language escape hatches. Flagged
+# statically here; dynamic DISPATCH of an ordinary sink (getattr(os,"system")()) is not visible
+# to a static reader and is caught at runtime by runtime_guard.py instead.
+_DYNAMIC = {"eval", "exec", "compile", "__import__"}
 # os.exec* / os.spawn* families (prefix match under the os module).
 _OS_CALL_PREFIXES = ("exec", "spawn")
 # open() modes that WRITE. A read ('r' or default) is allowed.
@@ -111,6 +118,8 @@ class _Visitor(ast.NodeVisitor):
             if len(node.args) >= 2 or any(k.arg == "mode" for k in node.keywords):
                 if (not mode) or (set(mode) & _WRITE_CHARS):
                     self._flag(node, f"open({mode or '?'})")
+        elif target in _DYNAMIC:
+            self._flag(node, target)
         elif target in _SINK_FULL:
             self._flag(node, target)
         elif target.startswith(_SINK_PREFIX):

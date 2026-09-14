@@ -74,7 +74,8 @@ policy.py          v1 deterministic tier classifier  — REFERENCE; bring your o
 kernel.py          the single mediated path: composes the layers, records every decision
 shadow.py          run v2 beside v1 without enforcing (observe-only rollout)
 executor.py        the single dispatch waist — effectors are registered data; execute() gates them
-mediation_audit.py CI check: fails the build if a raw effect primitive escapes the executor  (MED)
+mediation_audit.py static CI check: fails the build if a raw effect is written outside executor  (MED)
+runtime_guard.py   PEP 578 audit hook: blocks a dynamic-dispatch effect at runtime, in-process (RTG)
 governance_operator.py   the OPERATOR half — run OFF the agent host; mints signed grants
 ```
 
@@ -83,8 +84,17 @@ only governs what reaches it, so `executor.py` makes the gated `execute()` the *
 effectors are registered (`@effector("email:move")`) rather than called directly, so adding a
 capability means registering one, and a registered handler runs only after `kernel.mediate()`
 permits it. `mediation_audit.py` then walks your agent-reachable modules and fails CI if any raw
-effect primitive (subprocess, socket, http, write-mode `open`, deletion) appears outside the
-executor. Point it at your own agent package: `python mediation_audit.py youragent/*.py`.
+effect primitive (subprocess, socket, http, write-mode `open`, deletion, and the `eval`/`exec`/
+`ctypes` escape hatches) appears outside the executor. Point it at your own agent package:
+`python mediation_audit.py youragent/*.py`.
+
+Because the static check can't see an effect reached by *dynamic dispatch* (`getattr(os,"system")()`,
+a callable pulled from a dict), `runtime_guard.py` is the runtime layer: a PEP 578 audit hook that
+fires *inside* CPython when a guarded effect (process spawn, network, `ctypes`) actually happens and
+blocks it unless the thread is inside `executor.execute()`'s permit window. Install it once at agent
+start-up (`runtime_guard.install()`) and a mediated handler becomes the only place an effect runs,
+not just the only place one is written. It is in-process defense in depth, not a sandbox — a native
+exploit or a fresh `fork()`+`exec()` is outside its reach, which is what the OS boundary below is for.
 
 `policy.py` here is a **generic reference classifier**. The kernel treats it as an optional,
 fail-closed layer: supply your own affordance taxonomy through the same
@@ -97,8 +107,9 @@ No dependencies for the core suite (Python 3.11+). `cryptography` enables the as
 stop-grant; without it, the model falls back to HMAC (tamper-evident, not tamper-proof).
 
 ```bash
-python test_governance.py            # 22 invariants, asserts on values
-python mediation_audit.py youragent/*.py   # completeness: no effect escapes the executor (your agent modules)
+python test_governance.py            # 23 invariants, asserts on values
+python mediation_audit.py youragent/*.py   # static completeness: no effect written outside the executor
+python runtime_guard.py              # runtime guard self-test: a dynamic-dispatch escape is blocked
 python redteam.py             # deterministic adversarial probes (regression fixtures)
 python kernel.py demo         # the worked examples from GOVERNANCE_MODEL.md
 ```

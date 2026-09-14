@@ -69,6 +69,20 @@ reach the fleet, the guest cannot — its effective reach is exactly what the pr
     ```
     Now even a full code-exec escape by the agent cannot edit the guardrails or erase the audit
     trail — the OS refuses, and the attempt is logged. Step 8 verifies this as the agent user.
+6c. **Contain the primitive that never enters CPython (kernel-level).** `runtime_guard.py` blocks
+    dynamic-dispatch effects *in-process*, but a native extension, an FFI call, or a memory-corruption
+    exploit runs below the interpreter and never fires an audit hook. Shrink that surface at the
+    kernel, so the process cannot make the syscalls an escape needs even if it reaches native code:
+    - **seccomp-bpf** — launch the agent under a syscall allowlist (e.g. `bwrap --seccomp` /
+      systemd `SystemCallFilter=@system-service` + `SystemCallFilter=~@network-io @mount @reboot`,
+      or a small libseccomp loader). Deny `socket`/`connect`, `ptrace`, `mount`, and raw `clone`
+      of new user namespaces — the agent reaches the network only through the proxy, never a raw socket.
+    - **Landlock LSM** (Linux ≥5.13) — restrict the process's filesystem to a read-only view of the
+      governance code + its own scratch dir; no write path to the guardrails, no exec of new binaries.
+    - **No new privileges** — `prctl(PR_SET_NO_NEW_PRIVS)` / `NoNewPrivileges=yes` so a setuid binary
+      cannot re-escalate. Run the agent as a dedicated non-root uid (already assumed in 6b).
+    This is the layer the framework's own docs mean by "boundary sufficient": the in-process guard
+    raises the bar, the kernel filter is what actually holds against native code.
 7. **Snapshot** the clean VM (so you can revert to zero state after the run).
 8. **VERIFY — do not run until this passes:**
    ```
@@ -92,6 +106,8 @@ reach the fleet, the guest cannot — its effective reach is exactly what the pr
 | GET/HEAD-only, port 443/80-only | write/exfil verbs and SSH-out through the proxy |
 | No credentials in the guest | the agent finding a key that would authenticate anywhere |
 | Synthetic data + canaries | any real data existing to leak; undetected exfiltration |
+| `runtime_guard.py` (in-process, PEP 578) | a guarded effect reached by dynamic dispatch the static audit can't see |
+| seccomp / Landlock / no-new-privs (kernel) | a native / FFI / exploit primitive that runs below the interpreter |
 | Snapshot/revert | persistent state surviving the run |
 
 ## Honest residuals (for the paper's threat model)

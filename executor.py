@@ -40,6 +40,7 @@ Python's call graph at all.
 from __future__ import annotations
 
 import kernel
+import runtime_guard
 
 # affordance -> handler(args) -> result. The ONLY registry of things that can cause an effect.
 _REGISTRY: dict = {}
@@ -103,4 +104,10 @@ def execute(affordance: str, args: dict | None = None, *, principal: str = "mind
         conscience_fn=conscience_fn, proposal=proposal, derived_from=derived_from)
     if not permitted:
         return Outcome(False, None, decision, why)
-    return Outcome(True, handler(args), decision, "permitted")
+    # Open the runtime-guard permit window around the handler. When runtime_guard.install() has
+    # been called by the agent process, guarded effects (process spawn, network, ctypes) run ONLY
+    # inside this window — so a mediated handler is the only place an effect is allowed at runtime,
+    # not just the only place one is written. If the guard is not installed, permit() is a no-op.
+    with runtime_guard.permit():
+        result = handler(args)
+    return Outcome(True, result, decision, "permitted")
