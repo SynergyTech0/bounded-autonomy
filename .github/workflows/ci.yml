@@ -1,0 +1,37 @@
+name: conformance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The gate itself has zero dependencies; cryptography only enables the Ed25519 off-box grant.
+      - name: Install cryptography (optional off-box grant)
+        run: python -m pip install --quiet cryptography
+
+      - name: Conformance — 24 invariants, asserting on values
+        run: python test_governance.py
+
+      - name: Red-team ratchet — 0 bypasses
+        run: python redteam.py
+
+      - name: Runtime guard — a dynamic-dispatch escape is blocked
+        run: python runtime_guard.py
+
+      - name: Mediation completeness — the reference agent routes every effect through the gate
+        run: python mediation_audit.py examples/reference_agent.py
