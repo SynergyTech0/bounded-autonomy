@@ -1,0 +1,19 @@
+{
+  "//": "Merge this into your project or user .claude/settings.json to add the Bounded Autonomy",
+  "//gate": "gate as a PreToolUse hook ALONGSIDE ECC's hooks (Claude Code runs all; any deny blocks).",
+  "//path": "Replace /ABS/PATH with the absolute path to your bounded-autonomy checkout.",
+  "//env": "BA_PRINCIPAL names the acting principal your policy authorizes (default: claude-code).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /ABS/PATH/bounded-autonomy/adapters/claude_code_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}
