@@ -107,6 +107,11 @@ TIER = {
     "build:ship": DESTRUCTIVE,     # real repo / deploy / spend money
     "heal:destroy": DESTRUCTIVE,   # anything that deletes/wipes
 
+    # --- file tools (the coding-agent adapters map Read/Glob/Grep, Write/Edit here) -----
+    "fs:read": AUTO,             # reading a file is observation
+    "fs:write": PROPOSE,         # writing is reversible -> a human approves (or a backstop allows)
+    "fs:delete": DESTRUCTIVE,    # deleting a file is irreversible -> human only
+
     # --- arbitrary command -> scan the content -----------------------------------------
     "sys:exec": "scan",
     #
@@ -209,7 +214,7 @@ def scan_command(cmd: str) -> tuple[bool, str]:
 # decision, not an ethical one). Anything that acts, sends, writes or leaves the boundary is NOT here.
 OBSERVATIONAL = {
     "sys:disk", "sys:mem", "sys:top", "sys:net", "sys:gpu", "sys:services", "sys:journal",
-    "data:metrics", "web:health", "node:ping", "screen:capture",
+    "data:metrics", "web:health", "node:ping", "screen:capture", "fs:read",
     "heal:observe", "container:list", "container:inspect_health",
     "heal:alert", "act:alert",
 }

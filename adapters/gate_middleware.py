@@ -116,6 +116,33 @@ class Gate:
                               f"gate failed closed ({type(e).__name__}): {str(e)[:80]}",
                               "tool:error", None)
 
+    def backstop(self, tool: str, args: dict | None = None) -> GateResult:
+        """Interactive posture: a HARD FLOOR, not an autonomy gate. For a human-driven session
+        (Claude Code, an ECC harness) the operator is already in the loop, so re-asking on every
+        reversible action is noise, and accumulating session taint would block ordinary work (a
+        fetch after any write). This enforces only the DETERMINISTIC policy tier — it denies the
+        irreversible / destructive class (`rm -rf` and friends, a file delete, a data export, a
+        DROP/TRUNCATE, installing code) and lets everything else through for the human and the
+        harness. No grant needed (autonomous=False: the human is the operator); it never floods a
+        session with 'ask'. Fail-closed: deny.
+
+        The full trajectory gate — information-flow taint, destination-trust egress, off-box
+        corrigibility — is `check()` (autonomous mode), for when the agent runs WITHOUT a human.
+        `allow` is True unless the policy tier is DESTRUCTIVE or REFUSE."""
+        try:
+            affordance = self.affordance_for(tool)
+            margs = self._map_args(tool, args or {})
+            d = kernel.authorize(affordance, margs, principal=self.principal, session=self.session,
+                                 autonomous=False, legibility_verifier=self.verifier,
+                                 proposal={"summary": affordance, "claims": [], "affordances": [affordance]})
+            verdict = d.enforced(("policy",))          # deterministic floor only — no session taint
+            hard = lattice.rank(verdict) <= lattice.rank(lattice.DESTRUCTIVE)   # DESTRUCTIVE or REFUSE
+            return GateResult(not hard, verdict, d.reason, affordance, d)
+        except BaseException as e:
+            return GateResult(False, lattice.REFUSE,
+                              f"gate failed closed ({type(e).__name__}): {str(e)[:80]}",
+                              "tool:error", None)
+
 
 def gated(gate: Gate, tool_name: str | None = None):
     """Decorator: block a tool function unless the gate permits it. The wrapped function's name is

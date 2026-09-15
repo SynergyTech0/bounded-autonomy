@@ -32,6 +32,11 @@ from adapters.gate_middleware import Gate  # noqa: E402
 import lattice  # noqa: E402
 
 _PRINCIPAL = os.environ.get("BA_PRINCIPAL", "claude-code")
+# backstop (default): interactive posture — deny only irreversible/exfil, allow the rest, no grant
+#   needed (the human is the operator). Best for a hands-on Claude Code / ECC session.
+# autonomous: the full gate — AUTO permitted only under a live off-box grant, PROPOSE -> ask,
+#   DESTRUCTIVE/REFUSE -> deny. Use when the agent runs without a human in the loop.
+_MODE = os.environ.get("BA_MODE", "backstop")
 
 
 def _decision(perm, reason):
@@ -55,13 +60,24 @@ def main():
     tool = payload.get("tool_name") or payload.get("tool") or ""
     args = payload.get("tool_input") or payload.get("input") or {}
 
-    r = Gate(principal=_PRINCIPAL, session="claude-code").check(tool, args)
-    if r.allow:
-        _decision("allow", f"gate: AUTO ({r.affordance})")
-    elif r.verdict == lattice.PROPOSE:
-        _decision("ask", f"gate: PROPOSE — {r.reason}")
-    else:
-        _decision("deny", f"gate: {r.verdict.upper()} — {r.reason}")
+    # Use the Claude Code session id so information-flow taint is scoped to THIS session,
+    # not leaked across every session through one fixed name.
+    session = str(payload.get("session_id") or "claude-code")
+    gate = Gate(principal=_PRINCIPAL, session=session)
+    if _MODE == "autonomous":
+        r = gate.check(tool, args)
+        if r.allow:
+            _decision("allow", f"gate: AUTO ({r.affordance})")
+        elif r.verdict == lattice.PROPOSE:
+            _decision("ask", f"gate: PROPOSE — {r.reason}")
+        else:
+            _decision("deny", f"gate: {r.verdict.upper()} — {r.reason}")
+    else:  # backstop (default): only the irreversible/exfil tier is blocked; the human handles the rest
+        r = gate.backstop(tool, args)
+        if r.allow:
+            _decision("allow", f"gate backstop: {r.verdict} ({r.affordance}) — within limits")
+        else:
+            _decision("deny", f"gate backstop: {r.verdict.upper()} — {r.reason}")
     return 0
 
 
