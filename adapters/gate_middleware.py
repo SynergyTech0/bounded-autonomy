@@ -130,6 +130,15 @@ class Gate:
         corrigibility — is `check()` (autonomous mode), for when the agent runs WITHOUT a human.
         `allow` is True unless the policy tier is DESTRUCTIVE or REFUSE."""
         try:
+            # The backstop is a targeted floor on KNOWN destructive actions, NOT a whitelist. A tool
+            # it does not map (Skill, Agent/Task, MCP tools, TodoWrite, WebSearch, …) is not
+            # something it governs — allow it; the harness and the human handle those. Only mapped
+            # tools (Bash, Write, Edit, WebFetch, …) are classified and gated. (Autonomous check()
+            # fail-closes the unknown to a human; the interactive backstop must not, or it blocks
+            # every tool it has not heard of.)
+            if tool not in self.tool_map:
+                return GateResult(True, lattice.AUTO, "ungoverned tool — backstop allows",
+                                  "tool:ungoverned", None)
             affordance = self.affordance_for(tool)
             margs = self._map_args(tool, args or {})
             d = kernel.authorize(affordance, margs, principal=self.principal, session=self.session,
