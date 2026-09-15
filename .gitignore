@@ -31,3 +31,8 @@ sandbox_bundle/
 sandbox_bundle.zip*
 *_pkg.zip*
 *.zip
+governance_approval*
+*.d/
+escape_arena/
+escape_warden_state/
+escape_lab_state/

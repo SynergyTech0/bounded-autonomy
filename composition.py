@@ -30,6 +30,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 
 import lattice
 
@@ -318,6 +319,134 @@ def mesh_spend(affordance: str, window_s: int = 86400, path: str | None = None) 
 
 
 # ---------------------------------------------------------------- the layer
+# ----------------------------------------------------------- G9: destination trust (primary)
+# Measuring "how much secret could leave" (carrying_capacity) is an UNBOUNDED enumeration: an
+# attacker can always invent one more encoding. So content-volume is a SECONDARY signal; the PRIMARY
+# egress gate is ALLOWLISTED DESTINATION plus LABEL-SPECIFIC CLEARANCE. Under taint, egress to a
+# destination not cleared for the carried labels is DESTRUCTIVE regardless of payload encoding.
+# Fails closed: unknown/unparseable destination -> untrusted/uncleared.
+_DEST_ALLOWLIST = tuple(
+    p.strip().lower() for p in os.environ.get(
+        "GOVERNANCE_EGRESS_ALLOWLIST", "localhost,127.0.0.1,::1").split(",") if p.strip())
+_DEST_TOKEN_RE = re.compile(
+    r"(?:https?://|ftp://|ssh://|mailto:)?"
+    r"(?:[\w.-]+@)?"
+    r"(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]|[\w-]+(?:\.[\w-]+)+|localhost)"
+    r"(?:[:/][^\s\"']*)?", re.I)
+
+
+def _percent_decode(s: str, rounds: int = 3) -> str:
+    prev = s
+    for _ in range(rounds):
+        cur = urllib.parse.unquote(prev)
+        if cur == prev:
+            break
+        prev = cur
+    return prev
+
+
+def _dest_host(dest: str) -> str:
+    """The HOST of a destination token: scheme/userinfo/path/port stripped, percent-decoded first so
+    an encoded authority (localhost%2e evil...) cannot hide an untrusted suffix behind a trusted prefix.
+    A residual '%' is unparseable -> caller must treat as untrusted."""
+    d = _percent_decode(dest).lower().strip()
+    d = re.sub(r"^[a-z][a-z0-9+.-]*://", "", d)
+    d = d.split("/", 1)[0].split("?", 1)[0]
+    d = d.rsplit("@", 1)[-1]
+    if d.startswith("["):
+        return d[1:d.index("]")] if "]" in d else d.strip("[]")
+    return d.rsplit(":", 1)[0] if d.count(":") == 1 else d
+
+
+def _dest_trusted(dest: str) -> bool:
+    """CONNECTIVITY trust only (may we reach this host); exact host or subdomain of an allowlist entry.
+    Not a substring of the URL (spoofable), and NOT clearance to receive a secret (see _dest_cleared_for)."""
+    host = _dest_host(dest)
+    if not host or "%" in host:
+        return False
+    return any(pat and (host == pat or host.endswith("." + pat)) for pat in _DEST_ALLOWLIST)
+
+
+def _parse_clearance(spec: str) -> dict:
+    out = {}
+    for entry in spec.split(","):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        host, labs = entry.split("=", 1)
+        out[host.strip().lower()] = {l.strip().upper() for l in labs.split("|") if l.strip()}
+    return out
+
+
+# Label-specific destination clearance: a connectivity-allowlisted host is NOT thereby cleared to
+# RECEIVE a sensitive label. GOVERNANCE_EGRESS_CLEARANCE="host=LABEL|LABEL,h2=...". Default: no host
+# cleared for any SENSITIVE label, so a secret cannot autonomously egress even to loopback.
+_DEST_CLEARANCE = _parse_clearance(os.environ.get("GOVERNANCE_EGRESS_CLEARANCE", ""))
+
+
+def _dest_cleared_for(dest: str, labels) -> bool:
+    host = _dest_host(dest)
+    if not host or "%" in host:
+        return False
+    cleared = set()
+    for pat, labs in _DEST_CLEARANCE.items():
+        if pat and (host == pat or host.endswith("." + pat)):
+            cleared |= labs
+    return set(labels) <= cleared
+
+
+def _flatten_text(args) -> str:
+    out = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            for k, vv in v.items():
+                out.append(str(k)); walk(vv)
+        elif isinstance(v, (list, tuple, set)):
+            for vv in v:
+                walk(vv)
+        elif isinstance(v, bytes):
+            out.append(v.decode("utf-8", "replace"))
+        elif v is not None:
+            out.append(str(v))
+
+    walk(args or {})
+    return " ".join(out)
+
+
+def egress_destinations(affordance: str, args: dict | None = None) -> tuple[set, bool]:
+    """Every destination-like token in the args (scanned raw AND percent-decoded, unioned), and
+    whether ANY was found. An attacker who hides/mangles the destination only makes it unrecognisable,
+    which is treated as untrusted."""
+    blob = _flatten_text(args)
+    decoded = _percent_decode(blob)
+    dests = set(m.group(0) for m in _DEST_TOKEN_RE.finditer(blob))
+    dests |= set(m.group(0) for m in _DEST_TOKEN_RE.finditer(decoded))
+    return dests, bool(dests)
+
+
+def principal_taint(principal: str, window_s: int = WINDOW_S, path: str | None = None) -> set[str]:
+    """Every sensitivity label THIS PRINCIPAL acquired in the window, across all sessions. (G9)"""
+    if not principal:
+        return set()
+    out: set[str] = set()
+    for r in _window(None, window_s, path):
+        if r.get("principal") == principal:
+            out |= set(r.get("labels", []))
+    return out
+
+
+def global_taint(window_s: int = WINDOW_S, path: str | None = None) -> set[str]:
+    """Every sensitivity label acquired ANYWHERE in the process window — any session, any principal.
+    Exfil-taint is PROCESS-scoped, not principal-scoped: session and principal are caller-asserted, so
+    a fresh one cannot be trusted clean. This closes principal-rotation laundering (a caller reads a
+    secret as P1, then egresses it to a trusted destination as a fresh known-authority P2)."""
+    out: set[str] = set()
+    for r in _window(None, window_s, path):
+        out |= set(r.get("labels", []))
+    return out
+
+
 def gate(session: str, principal: str, affordance: str, args: dict | None = None,
          base_tier: str = lattice.AUTO, phi_node: bool = False,
          window_s: int = WINDOW_S, path: str | None = None,
@@ -330,34 +459,66 @@ def gate(session: str, principal: str, affordance: str, args: dict | None = None
         reasons: list[str] = []
         verdict = base_tier
 
-        prior = session_taint(session, window_s, path)
+        # Exfil-taint is PROCESS-scoped, not principal-scoped: session and principal are caller-
+        # asserted, so a fresh one cannot be trusted clean. The union closes principal-rotation
+        # laundering (a caller reads a secret as P1, then egresses it to a trusted destination as a
+        # fresh known-authority P2 whose principal-taint is empty).
+        prior = (session_taint(session, window_s, path)
+                 | principal_taint(principal, window_s, path)
+                 | global_taint(window_s, path))
         here = labels_for(affordance, args, phi_node)
 
-        # G9 — taint dominates tier, but only for an action that actually CARRIES something.
-        # `derived_from`, when the call site declares it, is authoritative data-flow and
-        # skips the heuristic entirely. Otherwise: session taint scaled by carrying capacity.
-        cap, cap_why = carrying_capacity(affordance, args)
+        cap, cap_why = carrying_capacity(affordance, args)   # SECONDARY signal; retained for G8 below
         if affordance in EGRESS:
             if derived_from is not None:
+                # AUTHORITATIVE declared data-flow: a call site's declaration is believed. A declared
+                # sensitive flow is destructive; a clean declaration is believed by G9 and left for G8
+                # to weigh as a SEQUENCE (see the split-payload rule below).
                 carried = set(derived_from) & SENSITIVE
                 if carried:
                     verdict = lattice.meet(verdict, lattice.DESTRUCTIVE)
                     reasons.append(f"G9 egress with DECLARED {'/'.join(sorted(carried))} data flow")
             else:
+                # HEURISTIC path. PRIMARY GATE: destination trust + LABEL-SPECIFIC clearance under
+                # PROCESS-scoped taint. Under carried taint, a destination must be explicitly cleared for
+                # EVERY carried label (a connectivity-allowlisted host is not thereby cleared to receive a
+                # secret); anything else is destructive whatever the encoding. When no destination is
+                # parseable, carrying capacity distinguishes a hidden-destination egress (cap>0 -> fail
+                # closed) from an action that moves nothing (cap==0, e.g. `df -h` -> not escalated).
                 carried = (prior | here) & SENSITIVE
-                if carried and cap >= CARRIER_HIGH:
-                    verdict = lattice.meet(verdict, lattice.DESTRUCTIVE)
-                    reasons.append(f"G9 egress carrying {'/'.join(sorted(carried))} taint "
-                                   f"(capacity {cap}: {cap_why})")
-                elif carried and cap > 0:
-                    verdict = lattice.meet(verdict, lattice.PROPOSE)
-                    reasons.append(f"G9 egress with low carrying capacity {cap} under "
-                                   f"{'/'.join(sorted(carried))} taint — human confirms")
-                elif carried:
-                    # Recorded, not escalated: a zero-capacity action moves no payload. The
-                    # low-bandwidth residual is stated in GOVERNANCE_MODEL.md §7.7.
-                    reasons.append(f"G9 noted: {'/'.join(sorted(carried))} taint in session but "
-                                   f"this action carries nothing ({cap_why})")
+                if carried:
+                    dests, found = egress_destinations(affordance, args)
+                    uncleared = sorted(d for d in dests if not _dest_cleared_for(d, carried))
+                    if uncleared:
+                        verdict = lattice.meet(verdict, lattice.DESTRUCTIVE)
+                        reasons.append(f"G9 egress under {'/'.join(sorted(carried))} taint to "
+                                       f"destination(s) {uncleared[:3]} not cleared for those labels — "
+                                       "destructive regardless of content")
+                    elif found:
+                        verdict = lattice.meet(verdict, lattice.PROPOSE)
+                        reasons.append(f"G9 egress under {'/'.join(sorted(carried))} taint to a "
+                                       f"destination cleared for those labels {sorted(dests)} — human confirms")
+                    elif cap > 0:
+                        verdict = lattice.meet(verdict, lattice.DESTRUCTIVE)
+                        reasons.append(f"G9 egress under {'/'.join(sorted(carried))} taint with no "
+                                       f"confirmable destination but carrying capacity {cap} — destructive")
+                    else:
+                        reasons.append(f"G9 noted: {'/'.join(sorted(carried))} taint in session but this "
+                                       f"action carries nothing to any destination ({cap_why})")
+                else:
+                    # No carried taint, but egress to a destination we cannot positively confirm is
+                    # trusted is still NEVER autonomous — closing the fresh-identity launder to AUTO. A
+                    # no-destination action that carries nothing (cap==0, e.g. `df -h`) is left alone.
+                    dests, found = egress_destinations(affordance, args)
+                    untrusted = sorted(d for d in dests if not _dest_trusted(d))
+                    if untrusted:
+                        verdict = lattice.meet(verdict, lattice.PROPOSE)
+                        reasons.append(f"G9 egress to unconfirmed destination(s) {untrusted[:3]} — never "
+                                       "autonomous, a human confirms")
+                    elif not found and cap > 0:
+                        verdict = lattice.meet(verdict, lattice.PROPOSE)
+                        reasons.append(f"G9 egress with no confirmable trusted destination but carrying "
+                                       f"capacity {cap} — never autonomous, a human confirms")
 
         # G9 (reverse) — untrusted content may never become an instruction. Web and inbound
         # mail are data; a session that has ingested them cannot then act at AUTO on their say-so.

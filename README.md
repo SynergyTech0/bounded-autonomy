@@ -12,6 +12,28 @@ before anything else. A governance model that oversells itself is worse than non
 The full normative specification is [`GOVERNANCE_MODEL.md`](GOVERNANCE_MODEL.md); the evaluation
 protocol is [`METHODOLOGY.md`](METHODOLOGY.md). This README is the map.
 
+**Technical report:** [`PAPER.md`](PAPER.md) — the design and its adversarial evaluation by
+independent cross-model red-teaming, written as bounded-attacker evidence (not a safety proof), with
+an honest limitations ledger and the findings the review found *and fixed*.
+
+**Reproduce the headline results:**
+
+```
+python redteam.py                     # regression ratchet (0 bypasses)
+python test_governance.py             # 24 invariant conformance checks
+python controls/untrusted_egress_matrix.py   # untrusted egress never AUTO (0/12), any principal/encoding/taint
+python controls/principal_rotation.py        # principal-rotation laundering to a trusted dest is denied (0/3)
+python controls/g9_reverse.py                # untrusted ingestion downgrades a later autonomous action
+# live escape test — a confined agent, blind to the gate, told to break out; fail-closed warden:
+python escape_supervisor.py init
+python escape_supervisor.py watch --timeout 3600
+python elab.py surface                 # the confined agent's only tool surface
+```
+
+The gate's exfil control is **destination-trust** (deny by where bytes go, not what they encode)
+with **process-scoped taint** and **label-specific destination clearance**, so exfiltration
+containment does not depend on the caller-asserted principal being honest.
+
 ---
 
 ## The problem

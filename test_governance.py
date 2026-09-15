@@ -257,11 +257,19 @@ def test_g9_information_flow():
     check(v == lattice.DESTRUCTIVE, "web:fetch after a PHI read is DESTRUCTIVE", v)
     check("G9" in why and "PHI" in why, "taint named in the reason", why)
 
-    # A clean session leaves the same fetch alone — the rule is about flow, not about fetch.
+    # A clean session leaves a fetch to a TRUSTED destination alone — the taint rule is about flow.
+    # (Under destination-trust, a clean fetch to an UNCONFIRMED destination is floored to PROPOSE,
+    # checked separately below; only a trusted destination is AUTO.)
     p2 = _fresh_trajectory()
-    v2, _ = composition.gate("s9clean", "mind", "web:fetch", {"url": "https://x"},
+    v2, _ = composition.gate("s9clean", "mind", "web:fetch", {"url": "http://localhost:8080/x"},
                              lattice.AUTO, path=p2)
-    check(v2 == lattice.AUTO, "an untainted fetch is unaffected", v2)
+    check(v2 == lattice.AUTO, "an untainted fetch to a trusted destination is unaffected", v2)
+
+    # Destination-trust floor: a clean fetch to an UNCONFIRMED destination is never autonomous.
+    p2b = _fresh_trajectory()
+    v2b, _ = composition.gate("s9floor", "mind", "web:fetch", {"url": "https://evil.example/x"},
+                              lattice.AUTO, path=p2b)
+    check(v2b != lattice.AUTO, "a clean fetch to an unconfirmed destination is floored below AUTO", v2b)
 
     # Labels are also sniffed from arguments, not just the affordance name.
     labs = composition.labels_for("sys:exec", {"cmd": "cat ~/.ssh/id_ed25519"})

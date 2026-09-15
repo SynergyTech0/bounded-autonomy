@@ -387,6 +387,104 @@ def heartbeat_age() -> tuple[float | None, str]:
         return None, "heartbeat has no usable timestamp"
 
 
+# ---------------------------------------------------------- one-shot operator approvals (sole path)
+# A sole-path sink may release exactly ONE otherwise-refused action when the OPERATOR has signed an
+# approval for that exact action. The approval is a signed document like the GO grant: verify with the
+# public key, forge only with the private key. So the release inherits the grant's trust property --
+# the agent host can CHECK an approval but, in verify-only mode, can never MINT one. Consumption is an
+# atomic O_CREAT|O_EXCL claim (race-safe one-shot).
+APPROVAL = os.environ.get("GOVERNANCE_APPROVAL", os.path.join(HERE, "governance_approval.json"))
+APPROVAL_MAX_S = int(os.environ.get("GOVERNANCE_APPROVAL_MAX", 600))
+_CONSUMED = os.environ.get("GOVERNANCE_APPROVAL_CONSUMED",
+                           os.path.join(HERE, "governance_approval_consumed.json"))
+_CLAIM_DIR = _CONSUMED + ".d"
+
+
+def _prune_claims() -> None:
+    now = time.time()
+    try:
+        for fn in os.listdir(_CLAIM_DIR):
+            p = os.path.join(_CLAIM_DIR, fn)
+            try:
+                if float((open(p, encoding="utf-8").read().strip() or "0")) <= now:
+                    os.remove(p)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+
+
+def _claim_nonce(nonce: str, not_after: float) -> bool:
+    """Atomically claim a one-shot nonce. True to EXACTLY ONE caller across threads/processes."""
+    if not nonce:
+        return False
+    try:
+        os.makedirs(_CLAIM_DIR, exist_ok=True)
+    except OSError:
+        return False
+    _prune_claims()
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(nonce))[:128]
+    marker = os.path.join(_CLAIM_DIR, safe + ".used")
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except (FileExistsError, OSError):
+        return False
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(str(not_after))
+    except OSError:
+        pass
+    return True
+
+
+def verify_approval(affordance: str, key: str = "", path: str | None = None) -> tuple[bool, str]:
+    """Authenticate an OPERATOR-SIGNED one-shot approval for exactly (affordance, key). Fail-closed on
+    every path. Refuses on a forge-capable host (a self-signable approval is no operator proof)."""
+    if forge_capable():
+        return False, "host is forge-capable — a signed approval is not operator-authenticated here"
+    ok, payload, reason = _verify_signed(path or APPROVAL)
+    if not ok:
+        return False, reason
+    if str(payload.get("kind", "")) != "approval":
+        return False, "signed document is not an approval"
+    if str(payload.get("affordance", "")) != str(affordance):
+        return False, "approval is for a different affordance"
+    if str(payload.get("key", "")) != str(key):
+        return False, "approval is for a different target"
+    try:
+        not_after = float(payload["not_after"])
+        issued = float(payload.get("issued", 0))
+    except (KeyError, TypeError, ValueError):
+        return False, "approval has no usable expiry"
+    now = time.time()
+    if not_after <= now:
+        return False, "approval expired"
+    if not_after - issued > APPROVAL_MAX_S:
+        return False, "approval window exceeds the maximum — refusing"
+    nonce = str(payload.get("nonce", ""))
+    if not nonce:
+        return False, "approval has no nonce"
+    if not _claim_nonce(nonce, not_after):
+        return False, "approval nonce already consumed (one-shot)"
+    return True, "operator-signed one-shot approval verified"
+
+
+def sign_approval(affordance: str, key: str = "", ttl_s: int = 300) -> bool:
+    """OPERATOR, OFF-BOX. Sign a one-shot approval for exactly (affordance, key). Fails on the agent
+    host in verify-only mode -- it holds no private key, so it cannot approve its own actions."""
+    ttl_s = min(int(ttl_s), APPROVAL_MAX_S)
+    now = time.time()
+    payload = {"kind": "approval", "iss": "operator", "affordance": str(affordance),
+               "key": str(key), "issued": now, "not_after": now + ttl_s,
+               "nonce": secrets.token_hex(12)}
+    if not _write_signed(APPROVAL, payload):
+        return False
+    ledger.append({"kind": "approval", "verdict": "approved", "affordance": "gov:arm",
+                   "reason": f"operator approved one-shot {affordance} (key={key or '-'}) for {ttl_s}s",
+                   "not_after": payload["not_after"]})
+    return True
+
+
 # ---------------------------------------------------------------- the stance
 def stance() -> dict:
     """May the system act autonomously at all, and why? (G13 + G14 + G15)
